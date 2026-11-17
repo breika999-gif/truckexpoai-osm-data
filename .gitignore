@@ -1,0 +1,8 @@
+__pycache__/
+.pytest_cache/
+output/
+parts/
+*.sqlite
+*.sqlite.gz
+*.pbf
+*.poly
