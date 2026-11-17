@@ -5,6 +5,14 @@ API credentials, driver histories or personal data belong in this repository.
 
 ## First Run
 
+Setup status: the extraction tools and tests are published. The workflow file
+is prepared locally but has not been uploaded: the current Git credential does
+not have permission to create workflows. An owner must add the prepared
+`.github/workflows/signs.yml` using GitHub's web editor or an appropriately
+authorized credential. Do not enable paid runners or change billing settings.
+Until that step is complete, the Actions entry below will not appear and no
+real-country build has been run.
+
 Run **Actions > Build OSM signs data > Run workflow**, scope `pilot`.
 This extracts Andorra and Liechtenstein, records extraction time, observed disk
 usage and output size, verifies checksums, and combines both countries.
