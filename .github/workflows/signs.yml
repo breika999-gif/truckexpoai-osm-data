@@ -1,0 +1,114 @@
+name: Build OSM signs data
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osm-signs-data
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      regions: ${{ steps.plan.outputs.regions }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r tools/requirements.txt pytest
+      - run: python -m pytest -q tools
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=tools python - <<'PY'
+          import json, os
+          names = ['spain', 'france']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('regions=' + json.dumps(names) + '\n')
+              output.write('tag=signs-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'] + '\n')
+          PY
+          tag="signs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --title "OSM signs $tag" --notes "Data-only build. OSM contributors / ODbL 1.0; Geofabrik extracts. Not activated on the application server."
+
+  country:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        region: ${{ fromJSON(needs.prepare.outputs.regions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y osmium-tool
+      - run: python -m pip install -r tools/requirements.txt
+      - name: Extract one region
+        env:
+          REGION: ${{ matrix.region }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: python tools/build_signs.py --output output --regions "$REGION" --asset-base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+      - name: Upload intermediate data to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REGION: ${{ matrix.region }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv output/signs.sqlite.gz "output/$REGION.sqlite.gz"
+          mv output/manifest.json "output/$REGION.manifest.json"
+          mv output/build-report.json "output/$REGION.build-report.json"
+          gh release upload "$TAG" output/*
+
+  combine:
+    needs: [prepare, country]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r tools/requirements.txt
+      - name: Validate and combine all requested regions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          REGIONS: ${{ needs.prepare.outputs.regions }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --dir parts
+          PYTHONPATH=tools python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from merge_signs import merge
+          merge(Path('parts'), Path('output'), json.loads(os.environ['REGIONS']),
+                'https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/releases/download/' + os.environ['TAG'])
+          PY
+          gh release upload "$TAG" output/*
+          cat output/build-report.json >> "$GITHUB_STEP_SUMMARY"
+          gh release edit "$TAG" --draft=false --prerelease=false --latest
+
